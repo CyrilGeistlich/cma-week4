@@ -1,0 +1,187 @@
+---
+title: "cma-week4-exercise"
+author: "Cyril Geistlich"
+date: "2023-05-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library("readr") 
+library("sf") 
+library("ggplot2") # to visualize data
+library("gitcreds")
+library("dplyr")
+library("lubridate")
+library("SimilarityMeasures")
+```
+# Task 1: Write your own functions
+
+```{r prep data}
+boar<- read_delim("data/wildschwein_BE_2056.csv", ",")
+boar$TierName |> unique()
+```
+
+```{r steplength function}
+steplength <- function(df,E,N,colname){
+  df <- df |>
+  mutate(colname = ((E - lead(E))^2 + (N - lead(N))^2)^0.5)
+}
+```
+
+```{r calc steplength}
+boar <- steplength(boar,boar$E,boar$N,steplength)
+```
+
+# Task 2: Prepare Analysis
+
+```{r prep data}
+sabi <- boar |> 
+  filter(TierName == 'Sabi') |>
+  filter(DatetimeUTC >= as.POSIXct("2015-04-01", tz = "UTC"), DatetimeUTC < as.POSIXct("2015-04-15", tz = "UTC")) 
+
+rosa <- boar |> 
+  filter(TierName == 'Rosa') |>
+  filter(DatetimeUTC >= as.POSIXct("2015-04-01", tz = "UTC"), DatetimeUTC < as.POSIXct("2015-04-15", tz = "UTC"))
+```
+
+# Task 3: Create Join Key
+
+```{r round time}
+sabi <- sabi |>
+  mutate(datetime = round_date(DatetimeUTC ,"15 mins"))
+
+rosa <- rosa |>
+  mutate(datetime = round_date(DatetimeUTC ,"15 mins"))
+```
+
+# Task 4: Measuring Distances at concurrent locations
+
+```{r join data}
+sabi_rosa <- full_join(sabi,rosa,by = "datetime", suffix = c("_sabi","_rosa"))
+```
+
+```{r calculate distance and meet}
+  sabi_rosa <- sabi_rosa |>
+  mutate(distance = ((E_sabi - lead(E_rosa))^2 + (N_sabi - lead(N_rosa))^2)^0.5) |>
+  mutate(meet = (distance < 100))
+```
+
+# Task 5: Visualize Data
+
+```{r vis data}
+meet <- sabi_rosa |>
+  filter(meet == TRUE)
+
+posplot <- sabi_rosa |> 
+  ggplot() +
+  geom_point(aes(E_sabi,N_sabi,colour = "Sabi", alpha = distance, stroke = 1)) +
+  geom_point(aes(E_rosa,N_rosa, colour = "Rosa", alpha = distance))
+
+meet_plot <- meet |>
+  ggplot() +
+  geom_point(aes(E_rosa,N_rosa, colour = "meet"))
+
+# get the data frame used in meet_plot
+meet_data <- ggplot_build(meet_plot)$data[[1]]
+
+# add the data to posplot and modify the colour aesthetic
+comb_plot <- posplot +
+  geom_point(data = meet, aes(E_rosa, N_rosa, colour = "meet"))
+
+# display combined plot
+print(comb_plot)
+```
+
+# Task 6 (optional): Visualize data as timecube with plotly
+
+```{r}
+library("plotly")
+```
+```{r}
+fig <- plot_ly(sabi_rosa, x = ~E_sabi, y = ~N_sabi, z = ~datetime, type = 'scatter3d', mode = 'lines',
+        opacity = 1, line = list(width = 1, reverscale = FALSE))
+fig <- fig |> add_trace(x = ~E_rosa, y = ~N_rosa, z = ~datetime,
+            line = list(color = 'rgb(44, 160, 44)', width = 1))
+
+
+fig
+```
+
+# Task 7: Find “Meet Patterns” in your own tracking data
+
+```{r read posmo}
+posmo <- read_delim("data/posmo_2023-04-28T00_00_00+02_00-2023-04-30T23_59_59+02_00.csv", ",")
+posmo <-  select(posmo, datetime, lon_x, lat_y)
+posmo <- st_as_sf(posmo,coords = c("lon_x","lat_y"), crs = 4326) 
+posmo <- st_transform(posmo, crs = 2056)
+```
+```{r prep data}
+posmo_coordinates <- st_coordinates(posmo)
+posmo <- cbind(posmo, posmo_coordinates)
+posmo <- as.data.frame(posmo)
+  
+
+posmo <- posmo|>
+  mutate(hour = hour(datetime) + minute(datetime)/60 + second(datetime)/3600) |>
+  mutate(hour_round = round(hour/0.5)*0.5) # Round to half an hour
+day_1 <- posmo |>
+  filter(as.Date(datetime) == "2023-04-29")
+day_2 <- posmo |>
+  filter(as.Date(datetime) == "2023-05-01")
+```
+
+```{r join posmo data}
+rm(posmo_join)
+posmo_join <- 
+  full_join(day_1,day_2, by = "hour_round", suffix = c("_day1","_day2"))
+
+```
+
+```{r calculate distance and meet}
+# Note: We do not get a true result, even though the same positions were there, the time was not right :(
+posmo_join <- posmo_join |>
+  mutate(distance = ((X_day1 - lead(X_day2))^2 + (Y_day1 - lead(Y_day2))^2)^0.5) |>
+  mutate(meet_100 = (distance < 100)) |>
+  mutate(meet_1000 = (distance < 1000))
+
+```
+
+```{r}
+meet_map <- posmo_join |>
+  filter(meet_100 == TRUE)
+
+posmo_join_map <- ggplot(posmo_join) +
+  geom_point(aes(x = X_day1,y = Y_day1,color = "day 1" ,alpha = hour_round)) +
+  geom_point(aes(x = X_day2,y = Y_day2,color = "day 2", alpha = hour_round)) +
+  xlab("X") + ylab("Y") +
+  ggtitle("Comparison of Posmo Tracking data over two seperate days")
+
+  ggplot(meet_map) +
+  geom_point(aes(x = X_day1,y = Y_day1, color = "red"))
+
+```
+
+```{r}
+posmo_join_map <- ggplot(posmo_join) +
+  geom_point(aes(x = X_day1, y = Y_day1, color = "day 1", alpha = hour_round)) +
+  geom_point(aes(x = X_day2, y = Y_day2, color = "day 2", alpha = hour_round)) +
+  xlab("X") + ylab("Y") +
+  ggtitle("Comparison of Posmo Tracking data over two separate days")
+
+meet_map <- posmo_join %>%
+  filter(meet_100 == TRUE)
+
+meet_map <- ggplot(meet_map) +
+  geom_point(aes(x = X_day1, y = Y_day1, color = "meet"))
+
+combined_plot <- posmo_join_map +
+  geom_point(data = meet_map$data, aes(x = X_day1, y = Y_day1, color = "meet"), alpha = 1,size = 5) 
+
+print(combined_plot)
+
+```
+
